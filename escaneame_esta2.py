@@ -34,10 +34,6 @@ Advertencias y recomendaciones:
   - Algunas funcionalidades (nbtscan, nbtstat) dependen de utilidades externas.
   - La identificación es heurística: puede haber falsos positivos/negativos.
   - Asegúrate de tener autorización para escanear la red objetivo.
-
-Licencia:
-  Coloca aquí la licencia que prefieras (por ejemplo MIT). Si no indicas, se
-  entiende uso personal/educativo y responsabilidad del autor/operador.
 """
 
 import argparse
@@ -362,3 +358,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
