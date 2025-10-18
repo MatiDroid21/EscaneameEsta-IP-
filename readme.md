@@ -66,7 +66,7 @@ Algunas funciones requieren permisos de **administrador/root**.
 
 ```bash
 # 1. Clona o descarga este repositorio
-git clone https://github.com/tuusuario/escaneame_esta.git
+git clone https://github.com/MatiDroid21/escaneame_esta.git
 cd escaneame_esta
 
 # 2. (Opcional) Crea un entorno virtual
