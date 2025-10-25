@@ -78,16 +78,10 @@ source .venv/bin/activate      # Linux/macOS
 pip install tqdm
 🛠️ Uso básico
 🔍 Escaneo de un rango CIDR:
-bash
-Copiar código
 python escaneame_esta.py --cidr 192.168.1.0/24
 📄 Escaneo desde archivo de IPs:
-bash
-Copiar código
 python escaneame_esta.py --file ips.txt --out-prefix mi_red
 🧪 Ejemplo completo:
-bash
-Copiar código
 python escaneame_esta.py \
   --cidr 10.0.0.0/24 \
   --ports 22,80,443,139,445 \
@@ -145,3 +139,4 @@ Impresoras, servidores, equipos Windows, cámaras IP, dispositivos Apple, router
 💡 Usa --use-nmap para análisis más profundo.
 
 🔐 Escanea solo redes que te pertenecen o donde tengas permiso.
+
