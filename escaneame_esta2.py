@@ -59,20 +59,36 @@ import sys
 from typing import Optional, Dict, List, Tuple
 from collections import defaultdict
 
-# Opcional: tqdm para barra de progreso
+import argparse
+import ipaddress
+import platform
+import subprocess
+import socket
+import concurrent.futures
+import time
+import shutil
+import re
+import json
+import ssl
+import csv
+import sys
+from typing import Optional, Dict, List, Tuple
+from collections import defaultdict
+
+# Opcional: tqdm para barra de progreso en consola
 try:
     from tqdm import tqdm
 except Exception:
     tqdm = None
 
-# Constantes por defecto
+# Constantes
 DEFAULT_OUT_PREFIX = "hosts_escaneados"
 DEFAULT_PORTS = [22, 80, 443, 139, 445]
 DEFAULT_WORKERS = 50
 DEFAULT_TIMEOUT = 1.0
 DEFAULT_RETRIES = 1
 
-# Mapeo OUI (ejemplo corto; puedes ampliarlo)
+# OUI MAP
 OUI_MAP = {
     "00:11:22": "DELL",
     "00:15:5D": "MICROSOFT",
@@ -83,7 +99,10 @@ OUI_MAP = {
     "F4:5C:89": "HUAWEI",
 }
 
-def run_cmd(cmd: List[str], timeout: float = 3.0) -> Tuple[int, str, str]:
+# -----------------------
+# Funciones auxiliares
+# -----------------------
+def run_cmd(cmd: List[str], timeout: float = 3.0):
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         return p.returncode, p.stdout, p.stderr
@@ -91,25 +110,24 @@ def run_cmd(cmd: List[str], timeout: float = 3.0) -> Tuple[int, str, str]:
         return 1, "", str(e)
 
 def ping_ip(ip: str, timeout: float = 1.0) -> bool:
-    """Ping simple usando utilidad del sistema. No bloqueante grande."""
     plat = platform.system().lower()
     if "windows" in plat:
         cmd = ["ping", "-n", "1", "-w", str(int(timeout * 1000)), ip]
     else:
-        # -W timeout en segundos para linux (algunos BSD usan otra sintaxis)
-        cmd = ["ping", "-c", "1", "-W", str(int(max(1, timeout)) ), ip]
+        cmd = ["ping", "-c", "1", "-W", str(int(max(1, timeout))), ip]
     rc, out, err = run_cmd(cmd, timeout=timeout + 1)
     return rc == 0
 
-def reverse_dns(ip: str) -> Optional[str]:
+def reverse_dns(ip: str):
     try:
-        name, _, _ = socket.gethostbyaddr(ip)
-        return name
-    except Exception:
+        return socket.gethostbyaddr(ip)[0]
+    except:
         return None
 
-# --- NetBIOS helpers ---
-def netbios_nbtscan(ip: str) -> Optional[str]:
+# -----------------------
+# NetBIOS
+# -----------------------
+def netbios_nbtscan(ip: str):
     nbtscan_path = shutil.which("nbtscan")
     if not nbtscan_path:
         return None
@@ -122,203 +140,162 @@ def netbios_nbtscan(ip: str) -> Optional[str]:
             continue
         parts = re.split(r'\s+', line)
         if len(parts) >= 2:
-            # segundo campo suele ser NAME<00>
             name_field = parts[1]
             name = name_field.split("<")[0]
             return name
     return None
 
-def netbios_windows(ip: str) -> Optional[str]:
+def netbios_windows(ip: str):
     try:
         proc = subprocess.run(["nbtstat", "-A", ip], capture_output=True, text=True, timeout=3)
         for line in proc.stdout.splitlines():
             if "<00>" in line:
                 return line.split()[0].strip()
-    except Exception:
-        pass
-    return None
+    except:
+        return None
 
-def get_netbios_name(ip: str) -> Optional[str]:
+def get_netbios_name(ip: str):
     plat = platform.system().lower()
     if "windows" in plat:
         nb = netbios_windows(ip)
         if nb:
             return nb
-    # Fallback cross-platform
     return netbios_nbtscan(ip)
 
-# --- ARP helpers ---
-arp_cache: Dict[str, Optional[str]] = {}
+# -----------------------
+# ARP
+# -----------------------
+arp_cache = {}
 
-def get_mac_from_arp(ip: str) -> Optional[str]:
-    """Trata de obtener MAC desde caché / ip neigh / arp -n / arping."""
+def get_mac_from_arp(ip: str):
     if ip in arp_cache:
         return arp_cache[ip]
 
-    plat = platform.system().lower()
     mac = None
-    # Prefer ip neigh (linux)
-    if "linux" in plat:
-        try:
-            rc, out, err = run_cmd(["ip", "neigh", "show", ip], timeout=1)
-            m = re.search(r"([0-9a-fA-F:]{17})", out)
-            if m:
-                mac = m.group(1).lower()
-        except Exception:
-            mac = None
-    # Fallback arp
-    if not mac:
-        try:
-            rc, out, err = run_cmd(["arp", "-n", ip], timeout=1)
-            m = re.search(r"([0-9a-fA-F:]{17})", out)
-            if m:
-                mac = m.group(1).lower()
-        except Exception:
-            mac = None
+    plat = platform.system().lower()
 
-    # Try arping to populate ARP table if not found and arping exists
+    if "linux" in plat:
+        rc, out, err = run_cmd(["ip", "neigh", "show", ip], timeout=1)
+        m = re.search(r"([0-9a-fA-F:]{17})", out)
+        if m:
+            mac = m.group(1).lower()
+
+    if not mac:
+        rc, out, err = run_cmd(["arp", "-n", ip], timeout=1)
+        m = re.search(r"([0-9a-fA-F:]{17})", out)
+        if m:
+            mac = m.group(1).lower()
+
     if not mac and shutil.which("arping"):
-        try:
-            rc, out, err = run_cmd(["arping", "-c", "1", "-w", "1", ip], timeout=2)
-            # Re-check arp after arping
-            rc2, out2, err2 = run_cmd(["arp", "-n", ip], timeout=1)
-            m = re.search(r"([0-9a-fA-F:]{17})", out2)
-            if m:
-                mac = m.group(1).lower()
-        except Exception:
-            mac = None
+        rc, out, err = run_cmd(["arping", "-c", "1", "-w", "1", ip], timeout=2)
+        rc2, out2, err2 = run_cmd(["arp", "-n", ip], timeout=1)
+        m = re.search(r"([0-9a-fA-F:]{17})", out2)
+        if m:
+            mac = m.group(1).lower()
 
     arp_cache[ip] = mac
     return mac
 
-def guess_vendor(mac: Optional[str]) -> Optional[str]:
+def guess_vendor(mac):
     if not mac:
         return None
     prefix = mac.upper()[0:8]
     return OUI_MAP.get(prefix)
 
-# --- TCP / TLS probing ---
-def probe_tcp_connect(ip: str, port: int, timeout: float) -> Tuple[bool, Optional[socket.socket], Optional[str]]:
-    """Abre conexión TCP (no lee), devuelve socket (si se quiere usar)."""
-    try:
-        s = socket.create_connection((ip, port), timeout=timeout)
-        s.settimeout(timeout)
-        return True, s, ""
-    except Exception as e:
-        return False, None, str(e)
-
-def probe_banner(ip: str, port: int, timeout: float) -> Tuple[bool, str]:
-    """Intenta obtener banner para varios puertos. Retorna (ok, banner_str)."""
-    # Reintentos manejados por quien llame
+# -----------------------
+# Banner grabbing
+# -----------------------
+def probe_banner(ip: str, port: int, timeout: float):
     try:
         if port == 443:
-            # TLS: intentar handshake y obtener certificado subject + Server header (sobre TLS)
             context = ssl.create_default_context()
             context.check_hostname = False
             context.verify_mode = ssl.CERT_NONE
             with socket.create_connection((ip, port), timeout=timeout) as sock:
-                sock.settimeout(timeout)
                 with context.wrap_socket(sock, server_hostname=ip) as ss:
-                    # Obtener certificado
                     try:
                         cert = ss.getpeercert()
-                        subject = cert.get('subject', ())
-                        subj_str = " ".join("=".join(x) for part in subject for x in part) if subject else ""
-                    except Exception:
+                        subject = cert.get("subject", ())
+                        subj_str = " ".join("=".join(x) for part in subject for x in part)
+                    except:
                         subj_str = ""
-                    # Intentar leer primeros bytes (Server header)
+
                     try:
-                        # Hacer petición HTTP/1.1 para obtener Server header
                         req = f"GET / HTTP/1.1\r\nHost: {ip}\r\nConnection: close\r\n\r\n".encode()
                         ss.sendall(req)
                         data = ss.recv(1024)
-                        first_line = data.decode(errors="ignore").splitlines()[0] if data else ""
-                    except Exception:
-                        first_line = ""
-                    banner = "cert=" + subj_str + ";resp=" + first_line
-                    return True, banner
-        elif port in (80,):
+                        first = data.decode(errors="ignore").splitlines()[0] if data else ""
+                    except:
+                        first = ""
+
+                    return True, f"cert={subj_str};resp={first}"
+
+        elif port == 80:
             with socket.create_connection((ip, port), timeout=timeout) as s:
-                s.settimeout(timeout)
                 req = f"GET / HTTP/1.1\r\nHost: {ip}\r\nConnection: close\r\n\r\n".encode()
                 s.sendall(req)
-                data = s.recv(2048)
-                # extraer Server: header y status line
-                text = data.decode(errors="ignore")
-                lines = text.splitlines()
-                status = lines[0] if lines else ""
-                m = re.search(r"Server:\s*(.+)", text, flags=re.IGNORECASE)
-                server_hdr = m.group(1).strip() if m else ""
-                return True, f"{status} | Server: {server_hdr}"
+                data = s.recv(2048).decode(errors="ignore")
+                status = data.splitlines()[0] if data else ""
+                m = re.search(r"Server:\s*(.+)", data, flags=re.I)
+                server = m.group(1).strip() if m else ""
+                return True, f"{status} | Server: {server}"
+
         elif port == 22:
-            # SSH banner (read banner line)
             with socket.create_connection((ip, port), timeout=timeout) as s:
-                s.settimeout(timeout)
-                data = s.recv(256)
-                b = data.decode(errors="ignore").strip()
-                return True, b
+                banner = s.recv(256).decode(errors="ignore").strip()
+                return True, banner
+
         else:
-            # Puertos SMB/others: intentar conectar y leer primeros bytes
             with socket.create_connection((ip, port), timeout=timeout) as s:
-                s.settimeout(timeout)
                 try:
-                    data = s.recv(512)
-                    b = data.decode(errors="ignore").strip()
-                except Exception:
-                    b = ""
-                return True, b
-    except Exception:
+                    data = s.recv(512).decode(errors="ignore").strip()
+                except:
+                    data = ""
+                return True, data
+
+    except:
         return False, ""
 
-def classify_device(rdns: Optional[str], netbios: Optional[str], banners: Dict[int,str], mac_vendor: Optional[str]) -> str:
-    """Clasificación ampliada con heurísticas adicionales."""
+# -----------------------
+# Clasificación
+# -----------------------
+def classify_device(rdns, netbios, banners, vendor):
+    banners_text = " ".join(banners.values()).lower()
     rdns_l = (rdns or "").lower()
     nb_l = (netbios or "").lower()
-    vendor_l = (mac_vendor or "").lower() if mac_vendor else ""
-    banners_concat = " ".join(banners.values()).lower()
+    vendor_l = (vendor or "").lower()
 
-    # Impresora heurística
-    if any(x in rdns_l for x in ["printer", "print", "impresora"]) or \
-       any(x in nb_l for x in ["printer", "print"]) or \
-       any(x in banners_concat for x in ["hp pjl", "epson", "xerox", "printer"]):
+    if "printer" in rdns_l or "print" in rdns_l or "impresora" in rdns_l:
+        return "Impresora/Escáner"
+    if "printer" in nb_l or "print" in nb_l:
+        return "Impresora/Escáner"
+    if any(x in banners_text for x in ["hp", "xerox", "epson", "printer"]):
         return "Impresora/Escáner"
 
-    # Equipamiento de red por OUI
-    if mac_vendor and any(v in vendor_l for v in ["cisco", "huawei", "hpe", "juniper"]):
-        return "Equipo de red (switch/router)"
+    if vendor and any(v in vendor_l for v in ["cisco", "huawei", "juniper"]):
+        return "Equipo de red (router/switch)"
 
-    # Servidor HTTP
-    if any((p in banners and banners[p]) for p in (80, 443)) or "server:" in banners_concat:
-        return "Servidor Web / HTTP"
+    if any(p in banners for p in [80, 443]):
+        return "Servidor Web"
 
-    # SSH -> probablemente unix/linux server
     if 22 in banners and "openssh" in banners[22].lower():
-        return "Servidor Linux/UNIX (SSH)"
+        return "Servidor Linux/UNIX"
 
-    # SMB/Windows heurística
-    if any(p in banners and banners[p] for p in (139, 445)) or "microsoft-ds" in banners_concat or "samba" in banners_concat:
-        return "Equipo Windows (SMB/NetBIOS)"
+    if any(p in banners for p in [139, 445]):
+        return "Equipo Windows (SMB)"
 
-    # Apple
-    if mac_vendor and "apple" in vendor_l:
-        return "Equipo Apple (Mac/iOS)"
+    if vendor and "apple" in vendor_l:
+        return "Apple (Mac/iOS)"
 
-    # TLS certificate indicates device type (e.g., printer certs sometimes have model)
-    if 443 in banners and "cert=" in (banners[443] or "").lower():
-        certinfo = (banners[443] or "").lower()
-        if any(k in certinfo for k in ["printer", "hp", "xerox", "epson"]):
-            return "Impresora/Escáner (detectada por cert)"
-        if "iot" in certinfo or "camera" in certinfo:
-            return "IoT / Cámara"
+    return "Equipo (genérico/no identificado)"
 
-    # Fallback
-    if any(p in banners and banners[p] for p in (22, 80, 443)):
-        return "Dispositivo (HTTP/SSH) - posible servidor o IoT"
+# -----------------------
+# SCAN IP (MODIFICADO)
+# -----------------------
+def scan_ip(ip: str, ports: List[int], timeout: float, retries: int, skip_ping=False, try_arp=True):
 
-    return "Equipo (cliente / no identificado)"
+    print(f"[..] Escaneando {ip}", flush=True)
 
-def scan_ip(ip: str, ports: List[int], timeout: float, retries: int, skip_ping: bool=False, try_arp: bool=True) -> Dict:
-    """Escanea una IP y devuelve un dict con los resultados."""
     result = {
         "ip": ip,
         "reachable": False,
@@ -330,213 +307,147 @@ def scan_ip(ip: str, ports: List[int], timeout: float, retries: int, skip_ping: 
         "banners": {}
     }
 
-    # Ping (opcional)
+    # PING
+    print(f"[..] {ip}: ping...", flush=True)
     if not skip_ping:
-        try:
-            result["reachable"] = ping_ip(ip, timeout=timeout)
-        except Exception:
-            result["reachable"] = False
+        result["reachable"] = ping_ip(ip, timeout)
     else:
-        result["reachable"] = True  # si el usuario decide saltar ping, asumimos intentar puertos
+        result["reachable"] = True
+    print(f"[..] {ip}: ping={result['reachable']}", flush=True)
 
-    # DNS reverso
+    # DNS
+    print(f"[..] {ip}: reverse DNS...", flush=True)
     result["rdns"] = reverse_dns(ip) or ""
+    print(f"[..] {ip}: rdns={result['rdns']}", flush=True)
 
-    # NetBIOS
+    # NETBIOS
+    print(f"[..] {ip}: netbios...", flush=True)
     try:
-        nb = get_netbios_name(ip)
-        result["netbios"] = nb or ""
-    except Exception:
+        result["netbios"] = get_netbios_name(ip) or ""
+    except:
         result["netbios"] = ""
+    print(f"[..] {ip}: netbios={result['netbios']}", flush=True)
 
-    # MAC / OUI
+    # ARP
     if try_arp:
+        print(f"[..] {ip}: buscando MAC...", flush=True)
         mac = get_mac_from_arp(ip)
         result["mac"] = mac or ""
         result["vendor"] = guess_vendor(mac) or ""
-    else:
-        result["mac"] = ""
-        result["vendor"] = ""
+        print(f"[..] {ip}: MAC={result['mac']} vendor={result['vendor']}", flush=True)
 
-    # Probar puertos con reintentos simples
+    # PUERTOS
     for p in ports:
+        print(f"[..] {ip}: probando puerto {p}...", flush=True)
         ok = False
         banner = ""
-        for attempt in range(retries):
-            ok, banner = probe_banner(ip, p, timeout=timeout)
+        for _ in range(retries):
+            ok, banner = probe_banner(ip, p, timeout)
             if ok:
+                print(f"[..] {ip}: puerto {p} ABIERTO", flush=True)
                 result["banners"][p] = banner
                 break
-            # else: retry (no sleep heavy to avoid long total runtime)
-        # si no ok, no lo añadimos (mantener solo abiertos)
+        if not ok:
+            print(f"[..] {ip}: puerto {p} cerrado/no responde", flush=True)
 
-    # Clasificar
-    result["device_type"] = classify_device(result["rdns"], result["netbios"], result["banners"], result["vendor"])
+    # CLASIFICACIÓN
+    result["device_type"] = classify_device(
+        result["rdns"], result["netbios"], result["banners"], result["vendor"]
+    )
+    print(f"[OK] {ip}: tipo={result['device_type']}", flush=True)
+
     return result
 
-# --- IO helpers ---
-def load_ips_from_file(path: str) -> List[str]:
-    ips = []
+# -----------------------
+# IO
+# -----------------------
+def load_ips_from_file(path):
     with open(path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#"):
-                ips.append(line)
-    return ips
+        return [line.strip() for line in f if line.strip()]
 
-def generate_ips_from_cidr(cidr: str) -> List[str]:
+def generate_ips_from_cidr(cidr):
     net = ipaddress.ip_network(cidr, strict=False)
     return [str(ip) for ip in net.hosts()]
 
-def save_csv(results: List[Dict], out_prefix: str) -> str:
+def save_csv(results, out_prefix):
     path = f"{out_prefix}.csv"
-    with open(path, "w", encoding="utf-8", newline='') as f:
+    with open(path, "w", encoding="utf-8", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["ip", "reachable", "reverse_dns", "netbios", "mac", "vendor", "device_type", "banners"])
         for r in results:
-            # Consolidar banners en un string seguro
-            b_items = []
-            for p, b in r["banners"].items():
-                cleaned = (b or "").replace("\n", " ").replace("\r", " ")
-                b_items.append(f"{p}={cleaned[:300]}")
-            b_str = ";".join(b_items)
-            writer.writerow([r["ip"], r["reachable"], r["rdns"], r["netbios"], r["mac"], r["vendor"], r["device_type"], b_str])
-    print(f"[+] Guardado CSV: {path}")
+            b = ";".join([f"{p}={banner[:200]}" for p, banner in r["banners"].items()])
+            writer.writerow([r["ip"], r["reachable"], r["rdns"], r["netbios"], r["mac"], r["vendor"], r["device_type"], b])
+    print(f"[+] Guardado CSV: {path}", flush=True)
     return path
 
-def save_json(results: List[Dict], out_prefix: str) -> str:
+def save_json(results, out_prefix):
     path = f"{out_prefix}.json"
     with open(path, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
-    print(f"[+] Guardado JSON: {path}")
+    print(f"[+] Guardado JSON: {path}", flush=True)
     return path
 
-def save_summary(results: List[Dict], out_prefix: str) -> str:
+def save_summary(results, out_prefix):
     path = f"resumen_{out_prefix}.txt"
     types_count = defaultdict(int)
-    name_to_ips = defaultdict(set)
-    ip_to_names = {}
-
     for r in results:
         types_count[r["device_type"]] += 1
-        ip = r["ip"]
-        names = set(filter(None, [r["rdns"], r["netbios"]]))
-        ip_to_names[ip] = names
-        for name in names:
-            name_to_ips[name].add(ip)
 
     with open(path, "w", encoding="utf-8") as f:
-        f.write("Resumen del escaneo\n")
+        f.write("Resumen del escaneo:\n\n")
         f.write(f"Total IPs escaneadas: {len(results)}\n\n")
-        f.write("Conteo por tipo de dispositivo:\n")
         for t, c in sorted(types_count.items(), key=lambda x: -x[1]):
-            f.write(f"  {t}: {c}\n")
-        f.write("\nNombres (rdns/netbios) que apuntan a múltiples IPs:\n")
-        found = False
-        for name, ips in name_to_ips.items():
-            if len(ips) > 1:
-                f.write(f"  {name}: {', '.join(sorted(ips))}\n")
-                found = True
-        if not found:
-            f.write("  Ninguno encontrado.\n")
-        f.write("\nIPs con múltiples nombres detectados (rdns vs netbios):\n")
-        found2 = False
-        for ip, names in ip_to_names.items():
-            if len(names) > 1:
-                f.write(f"  {ip}: {', '.join(sorted(names))}\n")
-                found2 = True
-        if not found2:
-            f.write("  Ninguno encontrado.\n")
-        f.write("\nNotas:\n")
-        f.write(" - Identificación heurística basada en banners, nombres y vendor MAC.\n")
-        f.write(" - Puede haber falsos positivos.\n")
-    print(f"[+] Guardado resumen: {path}")
+            f.write(f"{t}: {c}\n")
+
+    print(f"[+] Guardado resumen: {path}", flush=True)
     return path
 
-# --- Opcional: nmap si está instalado (más detección) ---
-def run_nmap_on_ips(ips: List[str], out_prefix: str):
-    nmap_path = shutil.which("nmap")
-    if not nmap_path:
-        print("[!] nmap no encontrado en PATH, saltando nmap.")
-        return None
-    args = [nmap_path, "-sV", "-O", "-oX", f"{out_prefix}_nmap.xml"] + ips
-    print("[*] Ejecutando nmap para detección avanzada (si tienes permiso)...")
-    rc, out, err = run_cmd(args, timeout=300)
-    if rc == 0:
-        print(f"[+] nmap output: {out_prefix}_nmap.xml")
-    else:
-        print("[!] nmap falló o fue interrumpido.")
-    return f"{out_prefix}_nmap.xml" if rc == 0 else None
-
-# --- Main CLI ---
+# -----------------------
+# MAIN
+# -----------------------
 def main():
-    parser = argparse.ArgumentParser(description="Escaneo de IPs con heurísticas mejoradas.")
+    parser = argparse.ArgumentParser(description="Escaneo de IPs con heurísticas y progreso para GUI.")
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--cidr", help="Rango CIDR para escanear, ej: 192.168.1.0/24")
-    group.add_argument("--file", help="Archivo con IPs a escanear, una por línea")
-    parser.add_argument("--out-prefix", default=DEFAULT_OUT_PREFIX, help="Prefijo para archivos de salida")
-    parser.add_argument("--ports", default=",".join(str(x) for x in DEFAULT_PORTS), help="Lista de puertos separados por coma (ej: 22,80,443)")
-    parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS, help="Hilos concurrentes")
-    parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT, help="Timeout socket/ping en segundos")
-    parser.add_argument("--retries", type=int, default=DEFAULT_RETRIES, help="Reintentos por puerto")
-    parser.add_argument("--no-arp", action="store_true", help="No intentar ARP/arping")
-    parser.add_argument("--skip-ping", action="store_true", help="No hacer ping previo (intentar puertos directamente)")
-    parser.add_argument("--use-nmap", action="store_true", help="Si nmap está instalado, ejecútalo al final")
+    group.add_argument("--cidr")
+    group.add_argument("--file")
+    parser.add_argument("--out-prefix", default=DEFAULT_OUT_PREFIX)
+    parser.add_argument("--ports", default=",".join(str(x) for x in DEFAULT_PORTS))
+    parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS)
+    parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
+    parser.add_argument("--retries", type=int, default=DEFAULT_RETRIES)
+    parser.add_argument("--no-arp", action="store_true")
+    parser.add_argument("--skip-ping", action="store_true")
     args = parser.parse_args()
 
-    # Preparar lista de IPs
     if args.cidr:
-        print(f"[+] Generando IPs desde CIDR: {args.cidr}")
+        print(f"[+] Generando IPs desde CIDR {args.cidr}", flush=True)
         ips = generate_ips_from_cidr(args.cidr)
     else:
-        print(f"[+] Cargando IPs desde archivo: {args.file}")
+        print(f"[+] Leyendo IPs desde archivo {args.file}", flush=True)
         ips = load_ips_from_file(args.file)
 
-    ports = [int(p.strip()) for p in args.ports.split(",") if p.strip().isdigit()]
-    print(f"[+] Total IPs a escanear: {len(ips)} | Puertos: {ports} | Workers: {args.workers}")
+    ports = [int(p) for p in args.ports.split(",")]
 
-    start_time = time.time()
+    print(f"[+] Total IPs: {len(ips)} | Puertos: {ports} | Workers: {args.workers}", flush=True)
+
     results = []
-
-    # Ejecutar con ThreadPoolExecutor
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=args.workers)
-    futures = {}
-    it = ips
-    if tqdm:
-        pbar = tqdm(total=len(ips), desc="Escaneando")
-    else:
-        pbar = None
+    futures = {executor.submit(scan_ip, ip, ports, args.timeout, args.retries, args.skip_ping, not args.no_arp): ip for ip in ips}
 
-    for ip in it:
-        fut = executor.submit(scan_ip, ip, ports, args.timeout, args.retries, args.skip_ping, not args.no_arp)
-        futures[fut] = ip
+    for fut in concurrent.futures.as_completed(futures):
+        ip = futures[fut]
+        try:
+            res = fut.result()
+            results.append(res)
+        except Exception as e:
+            print(f"[ERROR] Falló {ip}: {e}", flush=True)
 
-    try:
-        for fut in concurrent.futures.as_completed(futures):
-            ip = futures[fut]
-            try:
-                res = fut.result()
-                results.append(res)
-                print(f"[+] {ip} -> {res['device_type']}")
-            except Exception as e:
-                print(f"[ERROR] Falló escaneo {ip}: {e}")
-            if pbar:
-                pbar.update(1)
-    finally:
-        if pbar:
-            pbar.close()
-        executor.shutdown(wait=True)
-
-    elapsed = time.time() - start_time
-    print(f"[+] Escaneo finalizado en {elapsed:.1f}s. Guardando archivos...")
-
+    print("[+] Guardando archivos...", flush=True)
     save_csv(results, args.out_prefix)
     save_json(results, args.out_prefix)
     save_summary(results, args.out_prefix)
 
-    if args.use_nmap:
-        run_nmap_on_ips(ips, args.out_prefix)
+    print("[✔] ESCANEO COMPLETO", flush=True)
 
 if __name__ == "__main__":
     main()
-
