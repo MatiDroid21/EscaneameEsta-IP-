@@ -1,4 +1,5 @@
-# 🔎 escaneame_esta.py — v2.1
+# 🔎 escaneame_esta.py — v2.2
+> 💻 Ahora con interfaz grafica
 
 > 📡 **Escaneo de IPs con heurística de identificación**  
 > 🧑‍💻 Autor: **MatiDroid21**
@@ -139,4 +140,5 @@ Impresoras, servidores, equipos Windows, cámaras IP, dispositivos Apple, router
 💡 Usa --use-nmap para análisis más profundo.
 
 🔐 Escanea solo redes que te pertenecen o donde tengas permiso.
+
 
