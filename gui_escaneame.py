@@ -11,6 +11,9 @@ import time
 SCRIPT = "escaneame_esta.py"
 
 
+# ------------------------------
+# Selección de archivo
+# ------------------------------
 def seleccionar_archivo():
     path = filedialog.askopenfilename(
         filetypes=[("Texto", "*.txt"), ("Todos los archivos", "*.*")]
@@ -20,6 +23,9 @@ def seleccionar_archivo():
         entry_file.insert(0, path)
 
 
+# ------------------------------
+# EJECUCIÓN DEL ESCANEO
+# ------------------------------
 def ejecutar():
     cidr = entry_cidr.get().strip()
     archivo = entry_file.get().strip()
@@ -33,8 +39,8 @@ def ejecutar():
         messagebox.showerror("Error", f"No se encontró el script: {SCRIPT}")
         return
 
-    # Construir comando
-    cmd = [sys.executable, SCRIPT]
+    # Construcción del comando
+    cmd = [sys.executable, "-u", SCRIPT]
 
     if cidr:
         cmd += ["--cidr", cidr]
@@ -47,50 +53,67 @@ def ejecutar():
         cmd.append("--skip-ping")
     if var_no_arp.get() == 1:
         cmd.append("--no-arp")
-    if var_nmap.get() == 1:
-        cmd.append("--use-nmap")
 
+    # Limpiar log
     text_log.delete("1.0", tk.END)
     text_log.insert(tk.END, "Ejecutando escaneo...\n")
 
-    progress_bar["value"] = 0
-    progress_bar.update()
+    # Barra indeterminada
+    progress_bar.start(10)
 
+    # --------------------------
+    # Hilo de ejecución
+    # --------------------------
     def run():
         try:
+            text_log.insert(tk.END, f"[DEBUG] Ejecutando:\n{' '.join(cmd)}\n\n")
+
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1
             )
 
-            # Progreso como animación simple
-            while proc.poll() is None:
-                progress_bar.step(2)
-                progress_bar.update()
-                time.sleep(0.2)
+            # --- Lectores concurrentes ---
+            def leer_stdout():
+                for line in proc.stdout:
+                    text_log.insert(tk.END, line)
+                    text_log.see(tk.END)
 
-            for line in proc.stdout or []:
-                text_log.insert(tk.END, line)
-                text_log.see(tk.END)
+            def leer_stderr():
+                for line in proc.stderr:
+                    text_log.insert(tk.END, f"[ERROR] {line}")
+                    text_log.see(tk.END)
 
-            progress_bar["value"] = 100
-            progress_bar.update()
+            th_out = threading.Thread(target=leer_stdout, daemon=True)
+            th_err = threading.Thread(target=leer_stderr, daemon=True)
+
+            th_out.start()
+            th_err.start()
+
+            # Esperar fin del proceso
+            proc.wait()
+
+            progress_bar.stop()
 
             text_log.insert(tk.END, "\n--- ESCANEO FINALIZADO ---\n")
+            text_log.see(tk.END)
+
             messagebox.showinfo("Éxito", "El escaneo ha finalizado.")
 
         except Exception as e:
+            progress_bar.stop()
             text_log.insert(tk.END, f"\n[ERROR] {e}\n")
             messagebox.showerror("Error", f"Ocurrió un error:\n{e}")
 
     threading.Thread(target=run, daemon=True).start()
 
 
-# -------------------
+# ------------------------------
 # GUI
-# -------------------
+# ------------------------------
 root = tk.Tk()
 root.title("Escaneame_Esta — GUI Mejorada")
 root.geometry("750x550")
@@ -115,21 +138,20 @@ entry_out = ttk.Entry(frame, width=45)
 entry_out.insert(0, "hosts_escaneados")
 entry_out.grid(row=2, column=1, padx=5, pady=5)
 
-# Opciones / Checkboxes
+# Opciones
 var_skip_ping = tk.IntVar()
 var_no_arp = tk.IntVar()
-var_nmap = tk.IntVar()
 
-ttk.Checkbutton(frame, text="Saltar ping (--skip-ping)", variable=var_skip_ping).grid(row=3, column=0, sticky="w", pady=2)
-ttk.Checkbutton(frame, text="Desactivar ARP (--no-arp)", variable=var_no_arp).grid(row=3, column=1, sticky="w", pady=2)
-ttk.Checkbutton(frame, text="Usar Nmap (--use-nmap)", variable=var_nmap).grid(row=3, column=2, sticky="w", pady=2)
+ttk.Checkbutton(frame, text="Saltar ping (--skip-ping)", variable=var_skip_ping)\
+    .grid(row=3, column=0, sticky="w", pady=2)
+ttk.Checkbutton(frame, text="Desactivar ARP (--no-arp)", variable=var_no_arp)\
+    .grid(row=3, column=1, sticky="w", pady=2)
 
-# Botón Escaneo
-ttk.Button(frame, text="Iniciar Escaneo", command=ejecutar).grid(
-    row=4, column=0, columnspan=3, pady=10
-)
+# Botón
+ttk.Button(frame, text="Iniciar Escaneo", command=ejecutar)\
+    .grid(row=4, column=0, columnspan=3, pady=10)
 
-# Barra de progreso
+# Progreso
 progress_bar = ttk.Progressbar(root, mode="indeterminate")
 progress_bar.pack(fill="x", padx=10, pady=5)
 
