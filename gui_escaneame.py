@@ -116,7 +116,7 @@ def ejecutar():
 # ------------------------------
 root = tk.Tk()
 root.title("Escaneame_Esta — GUI Mejorada")
-root.geometry("750x550")
+root.geometry("750x450")
 
 frame = ttk.Frame(root, padding=10)
 frame.pack(fill="x")
