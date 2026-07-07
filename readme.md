@@ -1,18 +1,18 @@
-# 🔎 escaneame_esta.py — v2.2
-> 💻 Ahora con interfaz gráfica y detección heurística opcional de indicios de minería
+# 🔎 escaneame_esta.py — v3.0
+> 💻 Escaneo local de red con interfaz gráfica, heurística de identificación y evaluación de riesgo
 
 > 📡 **Escaneo de IPs con heurística de identificación**  
 > 🧑‍💻 Autor: **MatiDroid21**
 
-Una herramienta ligera y poderosa para **mapear y clasificar dispositivos en red local** usando heurísticas como ping, DNS inverso, NetBIOS, MAC/OUI desde ARP, banner grabbing y más.
+Una herramienta ligera y poderosa para **mapear, clasificar y priorizar dispositivos en red local** usando señales como ping, DNS inverso, NetBIOS, MAC/OUI desde ARP, banner grabbing, detección de indicios de minería y scoring de riesgo.
 
 Ideal para:
 - 🖨️ Inventario rápido de red
 - 🛠️ Análisis superficial
 - 🧠 Clasificación automática de dispositivos
-- 🔍 Detección heurística de indicios de minería cripto
+- 🚨 Priorización de hosts con riesgo
 
-⚠️ **Úsalo solo con autorización. Escanear redes sin permiso es ilegal.**
+⚠️ **Úsalo solo con autorización. Escanear redes sin permiso puede ser ilegal.**
 
 ---
 
@@ -20,12 +20,13 @@ Ideal para:
 
 | 🏷️ | Descripción |
 |-----|-------------|
-| 📦 Versión | `v3.0` — CLI robusto, GUI Tkinter, mejores salidas y detección heurística opcional |
+| 📦 Versión | `v3.1` — CLI robusto, GUI Tkinter, evaluación de riesgo y detección heurística opcional |
 | 🎯 Entrada | `--cidr` o `--file` |
 | 📁 Salida | CSV, JSON y TXT resumen |
-| ⚙️ Dependencias | `tqdm`, `nbtscan`, `arping`, `nbtstat` (opcionales) |
 | 🖥️ Interfaz | GUI Tkinter con log en tiempo real |
-| 🧪 Extras | `--crypto-scan` para revisar puertos asociados a minería |
+| ⚙️ Dependencias | `tqdm`, `nbtscan`, `arping`, `nbtstat` (opcionales) |
+| 🧪 Extras | `--crypto-scan` para indicios de minería |
+| 📊 Riesgo | `risk_score`, `risk_level`, `findings`, `recommendations` |
 
 ---
 
@@ -57,6 +58,11 @@ Ideal para:
 ✅ **Clasificación automática**:
 - Heurística basada en banners, DNS, OUI, NetBIOS y certificados TLS 🔍
 
+✅ **Evaluación de riesgo**:
+- Puntaje por puertos sensibles y señales expuestas.
+- Nivel de riesgo: `low`, `medium`, `high`, `critical`.
+- Recomendaciones automáticas para revisar hosts prioritarios.
+
 ✅ **Detección heurística de minería cripto**:
 - Marca indicios por puertos y servicios asociados.
 - Útil como señal temprana, no como confirmación definitiva.
@@ -71,7 +77,7 @@ Ideal para:
 | 📦 Módulos | `argparse`, `ipaddress`, `socket`, `ssl`, `csv`, `json`, `subprocess`, `threading`, `tkinter`, etc. (todos estándar) |
 | 📦 Opcional | `tqdm`, `nbtscan`, `arping`, `nmap` |
 
-Algunas funciones requieren permisos de **administrador/root**.
+Algunas funciones pueden requerir permisos de **administrador/root**.
 
 ---
 
@@ -85,7 +91,7 @@ cd escaneame_esta
 # 2. (Opcional) Crea un entorno virtual
 python -m venv .venv
 source .venv/bin/activate      # Linux/macOS
-.venv\Scripts\activate         # Windows
+.venv\Scripts\activate      # Windows
 
 # 3. Instala tqdm si deseas barra de progreso
 pip install tqdm
@@ -150,7 +156,7 @@ La GUI ejecuta el escaneo en segundo plano y muestra el log en tiempo real sin b
 
 | Archivo | Descripción |
 |--------|-------------|
-| `<prefix>.csv` | Resultados por host (tabulado) |
+| `<prefix>.csv` | Resultados por host en formato tabular |
 | `<prefix>.json` | Estructura completa legible |
 | `resumen_<prefix>.txt` | Resumen con estadísticas |
 
@@ -159,8 +165,8 @@ La GUI ejecuta el escaneo en segundo plano y muestra el log en tiempo real sin b
 ## 🧾 Ejemplo de salida CSV
 
 ```csv
-ip,reachable,reverse_dns,netbios,mac,vendor,device_type,crypto_suspicion,banners
-192.168.1.10,True,printer.local,HP-LASER,00:1A:2B:3C:4D:5E,HP,Impresora/Escáner,False,80=HTTP/1.1 200 OK | Server: HP-Device
+ip,reachable,reverse_dns,netbios,mac,vendor,device_type,risk_score,risk_level,crypto_suspicion,banners
+192.168.1.10,True,printer.local,HP-LASER,00:1A:2B:3C:4D:5E,HP,Impresora/Escáner,45,high,False,80=HTTP/1.1 200 OK | Server: HP-Device
 ```
 
 ---
@@ -189,6 +195,35 @@ ip,reachable,reverse_dns,netbios,mac,vendor,device_type,crypto_suspicion,banners
 
 ---
 
+## 🚨 Evaluación de riesgo
+
+La herramienta suma puntos cuando detecta servicios sensibles o expuestos. El resultado ayuda a priorizar qué hosts revisar primero.
+
+### Nivel de riesgo
+
+- `low`
+- `medium`
+- `high`
+- `critical`
+
+### Señales que elevan el riesgo
+
+- Puertos de administración expuestos.
+- SMB, RDP, Telnet, FTP o bases de datos abiertas.
+- Servicios sin cifrado o mal expuestos.
+- Indicios de minería cripto.
+
+### Recomendaciones automáticas
+
+El escáner puede sugerir acciones como:
+
+- Revisar firewall o segmentación.
+- Cerrar servicios innecesarios.
+- Restringir acceso administrativo.
+- Validar si un servicio expuesto es realmente necesario.
+
+---
+
 ## 🧪 Detección de minería cripto
 
 Esta función agrega una revisión adicional de puertos que suelen aparecer en entornos asociados a minería o pools de minería.
@@ -202,8 +237,9 @@ Esta función agrega una revisión adicional de puertos que suelen aparecer en e
 ## ✅ Recomendaciones de uso
 
 - 🔍 Empieza con pruebas pequeñas: `/30` o algunas IPs.
-- ⚙️ Ajusta `--timeout` y `--workers` para mejor rendimiento.
+- ⚙️ Ajusta `--timeout` y `--workers` según el rendimiento de tu red.
 - 💡 Usa `--crypto-scan` solo si quieres revisar indicios de minería.
+- 🚨 Revisa primero los hosts con `risk_level` alto o crítico.
 - 🔐 Escanea solo redes que te pertenecen o donde tengas permiso.
 
 ---
