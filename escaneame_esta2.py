@@ -44,51 +44,35 @@ Advertencias y recomendaciones:
 """
 
 import argparse
-import ipaddress
-import platform
-import subprocess
-import socket
 import concurrent.futures
-import time
-import shutil
-import re
-import json
-import ssl
 import csv
-import sys
-from typing import Optional, Dict, List, Tuple
-from collections import defaultdict
-
-import argparse
 import ipaddress
-import platform
-import subprocess
-import socket
-import concurrent.futures
-import time
-import shutil
-import re
 import json
+import platform
+import re
+import shutil
+import socket
 import ssl
-import csv
+import subprocess
 import sys
-from typing import Optional, Dict, List, Tuple
-from collections import defaultdict
+import time
+from collections import Counter, defaultdict
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
-# Opcional: tqdm para barra de progreso en consola
 try:
     from tqdm import tqdm
 except Exception:
     tqdm = None
 
-# Constantes
 DEFAULT_OUT_PREFIX = "hosts_escaneados"
 DEFAULT_PORTS = [22, 80, 443, 139, 445]
 DEFAULT_WORKERS = 50
 DEFAULT_TIMEOUT = 1.0
 DEFAULT_RETRIES = 1
+DEFAULT_CRYPTO_PORTS = [3333, 4444, 5555, 7777, 8332, 8333, 9333, 14444, 33333, 45560, 55555, 6060, 8888]
 
-# OUI MAP
 OUI_MAP = {
     "00:11:22": "DELL",
     "00:15:5D": "MICROSOFT",
@@ -99,62 +83,83 @@ OUI_MAP = {
     "F4:5C:89": "HUAWEI",
 }
 
-# -----------------------
-# Funciones auxiliares
-# -----------------------
-def run_cmd(cmd: List[str], timeout: float = 3.0):
+ARP_CACHE: Dict[str, Optional[str]] = {}
+
+
+@dataclass
+class ScanResult:
+    ip: str
+    reachable: bool = False
+    rdns: str = ""
+    netbios: str = ""
+    mac: str = ""
+    vendor: str = ""
+    device_type: str = ""
+    banners: Dict[int, str] = field(default_factory=dict)
+    crypto_suspicion: bool = False
+    crypto_ports: List[int] = field(default_factory=list)
+    crypto_details: List[Dict[str, str]] = field(default_factory=list)
+
+    def to_dict(self) -> Dict:
+        data = asdict(self)
+        data["banners"] = {str(k): v for k, v in self.banners.items()}
+        return data
+
+
+def run_cmd(cmd: List[str], timeout: float = 3.0) -> Tuple[int, str, str]:
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         return p.returncode, p.stdout, p.stderr
     except Exception as e:
         return 1, "", str(e)
 
+
 def ping_ip(ip: str, timeout: float = 1.0) -> bool:
     plat = platform.system().lower()
     if "windows" in plat:
         cmd = ["ping", "-n", "1", "-w", str(int(timeout * 1000)), ip]
     else:
-        cmd = ["ping", "-c", "1", "-W", str(int(max(1, timeout))), ip]
-    rc, out, err = run_cmd(cmd, timeout=timeout + 1)
+        cmd = ["ping", "-c", "1", "-W", str(max(1, int(timeout))), ip]
+    rc, _, _ = run_cmd(cmd, timeout=timeout + 1)
     return rc == 0
 
-def reverse_dns(ip: str):
+
+def reverse_dns(ip: str) -> str:
     try:
         return socket.gethostbyaddr(ip)[0]
-    except:
-        return None
+    except Exception:
+        return ""
 
-# -----------------------
-# NetBIOS
-# -----------------------
-def netbios_nbtscan(ip: str):
+
+def netbios_nbtscan(ip: str) -> str:
     nbtscan_path = shutil.which("nbtscan")
     if not nbtscan_path:
-        return None
-    rc, out, err = run_cmd([nbtscan_path, "-s:", ip], timeout=3)
+        return ""
+    rc, out, _ = run_cmd([nbtscan_path, "-s:", ip], timeout=3)
     if rc != 0:
-        return None
+        return ""
     for line in out.splitlines():
         line = line.strip()
         if not line or line.startswith("IP") or line.startswith("Scanning"):
             continue
-        parts = re.split(r'\s+', line)
+        parts = re.split(r"\s+", line)
         if len(parts) >= 2:
-            name_field = parts[1]
-            name = name_field.split("<")[0]
-            return name
-    return None
+            return parts[1].split("<")[0]
+    return ""
 
-def netbios_windows(ip: str):
+
+def netbios_windows(ip: str) -> str:
     try:
         proc = subprocess.run(["nbtstat", "-A", ip], capture_output=True, text=True, timeout=3)
         for line in proc.stdout.splitlines():
             if "<00>" in line:
                 return line.split()[0].strip()
-    except:
-        return None
+    except Exception:
+        pass
+    return ""
 
-def get_netbios_name(ip: str):
+
+def get_netbios_name(ip: str) -> str:
     plat = platform.system().lower()
     if "windows" in plat:
         nb = netbios_windows(ip)
@@ -162,50 +167,45 @@ def get_netbios_name(ip: str):
             return nb
     return netbios_nbtscan(ip)
 
-# -----------------------
-# ARP
-# -----------------------
-arp_cache = {}
 
-def get_mac_from_arp(ip: str):
-    if ip in arp_cache:
-        return arp_cache[ip]
+def get_mac_from_arp(ip: str) -> str:
+    if ip in ARP_CACHE:
+        return ARP_CACHE[ip] or ""
 
-    mac = None
+    mac = ""
     plat = platform.system().lower()
 
     if "linux" in plat:
-        rc, out, err = run_cmd(["ip", "neigh", "show", ip], timeout=1)
+        _, out, _ = run_cmd(["ip", "neigh", "show", ip], timeout=1)
         m = re.search(r"([0-9a-fA-F:]{17})", out)
         if m:
             mac = m.group(1).lower()
 
     if not mac:
-        rc, out, err = run_cmd(["arp", "-n", ip], timeout=1)
+        _, out, _ = run_cmd(["arp", "-n", ip], timeout=1)
         m = re.search(r"([0-9a-fA-F:]{17})", out)
         if m:
             mac = m.group(1).lower()
 
     if not mac and shutil.which("arping"):
-        rc, out, err = run_cmd(["arping", "-c", "1", "-w", "1", ip], timeout=2)
-        rc2, out2, err2 = run_cmd(["arp", "-n", ip], timeout=1)
+        run_cmd(["arping", "-c", "1", "-w", "1", ip], timeout=2)
+        _, out2, _ = run_cmd(["arp", "-n", ip], timeout=1)
         m = re.search(r"([0-9a-fA-F:]{17})", out2)
         if m:
             mac = m.group(1).lower()
 
-    arp_cache[ip] = mac
+    ARP_CACHE[ip] = mac or None
     return mac
 
-def guess_vendor(mac):
-    if not mac:
-        return None
-    prefix = mac.upper()[0:8]
-    return OUI_MAP.get(prefix)
 
-# -----------------------
-# Banner grabbing
-# -----------------------
-def probe_banner(ip: str, port: int, timeout: float):
+def guess_vendor(mac: str) -> str:
+    if not mac:
+        return ""
+    prefix = mac.upper()[0:8]
+    return OUI_MAP.get(prefix, "")
+
+
+def probe_banner(ip: str, port: int, timeout: float) -> Tuple[bool, str]:
     try:
         if port == 443:
             context = ssl.create_default_context()
@@ -213,24 +213,24 @@ def probe_banner(ip: str, port: int, timeout: float):
             context.verify_mode = ssl.CERT_NONE
             with socket.create_connection((ip, port), timeout=timeout) as sock:
                 with context.wrap_socket(sock, server_hostname=ip) as ss:
+                    subj_str = ""
                     try:
                         cert = ss.getpeercert()
                         subject = cert.get("subject", ())
                         subj_str = " ".join("=".join(x) for part in subject for x in part)
-                    except:
-                        subj_str = ""
-
+                    except Exception:
+                        pass
+                    first = ""
                     try:
                         req = f"GET / HTTP/1.1\r\nHost: {ip}\r\nConnection: close\r\n\r\n".encode()
                         ss.sendall(req)
                         data = ss.recv(1024)
                         first = data.decode(errors="ignore").splitlines()[0] if data else ""
-                    except:
-                        first = ""
-
+                    except Exception:
+                        pass
                     return True, f"cert={subj_str};resp={first}"
 
-        elif port == 80:
+        if port == 80:
             with socket.create_connection((ip, port), timeout=timeout) as s:
                 req = f"GET / HTTP/1.1\r\nHost: {ip}\r\nConnection: close\r\n\r\n".encode()
                 s.sendall(req)
@@ -238,216 +238,227 @@ def probe_banner(ip: str, port: int, timeout: float):
                 status = data.splitlines()[0] if data else ""
                 m = re.search(r"Server:\s*(.+)", data, flags=re.I)
                 server = m.group(1).strip() if m else ""
-                return True, f"{status} | Server: {server}"
+                return True, f"{status} | Server: {server}".strip()
 
-        elif port == 22:
+        if port == 22:
             with socket.create_connection((ip, port), timeout=timeout) as s:
-                banner = s.recv(256).decode(errors="ignore").strip()
-                return True, banner
+                return True, s.recv(256).decode(errors="ignore").strip()
 
-        else:
-            with socket.create_connection((ip, port), timeout=timeout) as s:
-                try:
-                    data = s.recv(512).decode(errors="ignore").strip()
-                except:
-                    data = ""
-                return True, data
-
-    except:
+        with socket.create_connection((ip, port), timeout=timeout) as s:
+            try:
+                data = s.recv(512).decode(errors="ignore").strip()
+            except Exception:
+                data = ""
+            return True, data
+    except Exception:
         return False, ""
 
-# -----------------------
-# Clasificación
-# -----------------------
-def classify_device(rdns, netbios, banners, vendor):
+
+def classify_device(rdns: str, netbios: str, banners: Dict[int, str], vendor: str) -> str:
     banners_text = " ".join(banners.values()).lower()
     rdns_l = (rdns or "").lower()
     nb_l = (netbios or "").lower()
     vendor_l = (vendor or "").lower()
 
-    if "printer" in rdns_l or "print" in rdns_l or "impresora" in rdns_l:
+    if any(x in rdns_l for x in ["printer", "print", "impresora"]):
         return "Impresora/Escáner"
-    if "printer" in nb_l or "print" in nb_l:
+    if any(x in nb_l for x in ["printer", "print"]):
         return "Impresora/Escáner"
     if any(x in banners_text for x in ["hp", "xerox", "epson", "printer"]):
         return "Impresora/Escáner"
-
     if vendor and any(v in vendor_l for v in ["cisco", "huawei", "juniper"]):
         return "Equipo de red (router/switch)"
-
     if any(p in banners for p in [80, 443]):
         return "Servidor Web"
-
     if 22 in banners and "openssh" in banners[22].lower():
         return "Servidor Linux/UNIX"
-
     if any(p in banners for p in [139, 445]):
         return "Equipo Windows (SMB)"
-
     if vendor and "apple" in vendor_l:
         return "Apple (Mac/iOS)"
-
     return "Equipo (genérico/no identificado)"
 
-# -----------------------
-# SCAN IP (MODIFICADO)
-# -----------------------
-def scan_ip(ip: str, ports: List[int], timeout: float, retries: int, skip_ping=False, try_arp=True):
 
-    print(f"[..] Escaneando {ip}", flush=True)
-
-    result = {
-        "ip": ip,
-        "reachable": False,
-        "rdns": "",
-        "netbios": "",
-        "mac": "",
-        "vendor": "",
-        "device_type": "",
-        "banners": {}
+def check_crypto_ports(ip: str, ports: List[int], timeout: float = 1.0) -> Dict:
+    details = []
+    open_ports = []
+    for port in ports:
+        ok, banner = probe_banner(ip, port, timeout)
+        if ok:
+            open_ports.append(port)
+            details.append({"port": port, "type": "Posible servicio asociado a minería", "banner": banner})
+    return {
+        "has_crypto": bool(open_ports),
+        "open_ports": open_ports,
+        "details": details,
     }
 
-    # PING
-    print(f"[..] {ip}: ping...", flush=True)
-    if not skip_ping:
-        result["reachable"] = ping_ip(ip, timeout)
+
+def scan_ip(ip: str, ports: List[int], timeout: float, retries: int, skip_ping: bool = False, try_arp: bool = True, crypto_scan: bool = False, crypto_ports: Optional[List[int]] = None) -> Dict:
+    result = ScanResult(ip=ip)
+
+    if skip_ping:
+        result.reachable = True
     else:
-        result["reachable"] = True
-    print(f"[..] {ip}: ping={result['reachable']}", flush=True)
+        result.reachable = ping_ip(ip, timeout)
 
-    # DNS
-    print(f"[..] {ip}: reverse DNS...", flush=True)
-    result["rdns"] = reverse_dns(ip) or ""
-    print(f"[..] {ip}: rdns={result['rdns']}", flush=True)
+    result.rdns = reverse_dns(ip)
+    result.netbios = get_netbios_name(ip)
 
-    # NETBIOS
-    print(f"[..] {ip}: netbios...", flush=True)
-    try:
-        result["netbios"] = get_netbios_name(ip) or ""
-    except:
-        result["netbios"] = ""
-    print(f"[..] {ip}: netbios={result['netbios']}", flush=True)
-
-    # ARP
     if try_arp:
-        print(f"[..] {ip}: buscando MAC...", flush=True)
-        mac = get_mac_from_arp(ip)
-        result["mac"] = mac or ""
-        result["vendor"] = guess_vendor(mac) or ""
-        print(f"[..] {ip}: MAC={result['mac']} vendor={result['vendor']}", flush=True)
+        result.mac = get_mac_from_arp(ip)
+        result.vendor = guess_vendor(result.mac)
 
-    # PUERTOS
     for p in ports:
-        print(f"[..] {ip}: probando puerto {p}...", flush=True)
         ok = False
         banner = ""
-        for _ in range(retries):
+        for _ in range(max(1, retries)):
             ok, banner = probe_banner(ip, p, timeout)
             if ok:
-                print(f"[..] {ip}: puerto {p} ABIERTO", flush=True)
-                result["banners"][p] = banner
                 break
-        if not ok:
-            print(f"[..] {ip}: puerto {p} cerrado/no responde", flush=True)
+        if ok:
+            result.banners[p] = banner
 
-    # CLASIFICACIÓN
-    result["device_type"] = classify_device(
-        result["rdns"], result["netbios"], result["banners"], result["vendor"]
-    )
-    print(f"[OK] {ip}: tipo={result['device_type']}", flush=True)
+    if crypto_scan:
+        crypto = check_crypto_ports(ip, crypto_ports or DEFAULT_CRYPTO_PORTS, timeout)
+        result.crypto_suspicion = crypto["has_crypto"]
+        result.crypto_ports = crypto["open_ports"]
+        result.crypto_details = crypto["details"]
 
-    return result
+    result.device_type = classify_device(result.rdns, result.netbios, result.banners, result.vendor)
+    return result.to_dict()
 
-# -----------------------
-# IO
-# -----------------------
-def load_ips_from_file(path):
+
+def load_ips_from_file(path: str) -> List[str]:
     with open(path, encoding="utf-8") as f:
-        return [line.strip() for line in f if line.strip()]
+        return [line.strip() for line in f if line.strip() and not line.startswith("#")]
 
-def generate_ips_from_cidr(cidr):
+
+def generate_ips_from_cidr(cidr: str) -> List[str]:
     net = ipaddress.ip_network(cidr, strict=False)
     return [str(ip) for ip in net.hosts()]
 
-def save_csv(results, out_prefix):
+
+def save_csv(results: List[Dict], out_prefix: str) -> str:
     path = f"{out_prefix}.csv"
     with open(path, "w", encoding="utf-8", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["ip", "reachable", "reverse_dns", "netbios", "mac", "vendor", "device_type", "banners"])
+        writer.writerow(["ip", "reachable", "reverse_dns", "netbios", "mac", "vendor", "device_type", "crypto_suspicion", "crypto_ports", "banners"])
         for r in results:
-            b = ";".join([f"{p}={banner[:200]}" for p, banner in r["banners"].items()])
-            writer.writerow([r["ip"], r["reachable"], r["rdns"], r["netbios"], r["mac"], r["vendor"], r["device_type"], b])
-    print(f"[+] Guardado CSV: {path}", flush=True)
+            banners = ";".join([f"{p}={str(banner)[:200]}" for p, banner in r.get("banners", {}).items()])
+            writer.writerow([
+                r.get("ip", ""),
+                r.get("reachable", False),
+                r.get("rdns", ""),
+                r.get("netbios", ""),
+                r.get("mac", ""),
+                r.get("vendor", ""),
+                r.get("device_type", ""),
+                r.get("crypto_suspicion", False),
+                ",".join(map(str, r.get("crypto_ports", []))),
+                banners,
+            ])
     return path
 
-def save_json(results, out_prefix):
+
+def save_json(results: List[Dict], out_prefix: str) -> str:
     path = f"{out_prefix}.json"
     with open(path, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
-    print(f"[+] Guardado JSON: {path}", flush=True)
     return path
 
-def save_summary(results, out_prefix):
+
+def save_summary(results: List[Dict], out_prefix: str) -> str:
     path = f"resumen_{out_prefix}.txt"
-    types_count = defaultdict(int)
-    for r in results:
-        types_count[r["device_type"]] += 1
-
+    types_count = Counter(r.get("device_type", "") for r in results)
+    crypto_count = sum(1 for r in results if r.get("crypto_suspicion"))
     with open(path, "w", encoding="utf-8") as f:
-        f.write("Resumen del escaneo:\n\n")
-        f.write(f"Total IPs escaneadas: {len(results)}\n\n")
-        for t, c in sorted(types_count.items(), key=lambda x: -x[1]):
+        f.write("Resumen del escaneo\n\n")
+        f.write(f"Total IPs escaneadas: {len(results)}\n")
+        f.write(f"Hosts con indicios de minería: {crypto_count}\n\n")
+        for t, c in types_count.most_common():
             f.write(f"{t}: {c}\n")
-
-    print(f"[+] Guardado resumen: {path}", flush=True)
     return path
 
-# -----------------------
-# MAIN
-# -----------------------
-def main():
-    parser = argparse.ArgumentParser(description="Escaneo de IPs con heurísticas y progreso para GUI.")
+
+def parse_ports(value: str) -> List[int]:
+    ports = []
+    for part in value.split(","):
+        part = part.strip()
+        if part:
+            ports.append(int(part))
+    return ports
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Escaneo de IPs con heurísticas y progresos")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--cidr")
     group.add_argument("--file")
     parser.add_argument("--out-prefix", default=DEFAULT_OUT_PREFIX)
     parser.add_argument("--ports", default=",".join(str(x) for x in DEFAULT_PORTS))
+    parser.add_argument("--crypto-ports", default=",".join(str(x) for x in DEFAULT_CRYPTO_PORTS))
     parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS)
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
     parser.add_argument("--retries", type=int, default=DEFAULT_RETRIES)
     parser.add_argument("--no-arp", action="store_true")
     parser.add_argument("--skip-ping", action="store_true")
+    parser.add_argument("--crypto-scan", action="store_true")
     args = parser.parse_args()
 
     if args.cidr:
-        print(f"[+] Generando IPs desde CIDR {args.cidr}", flush=True)
+        print(f"[+] Generando IPs desde CIDR {args.cidr}")
         ips = generate_ips_from_cidr(args.cidr)
     else:
-        print(f"[+] Leyendo IPs desde archivo {args.file}", flush=True)
+        print(f"[+] Leyendo IPs desde archivo {args.file}")
         ips = load_ips_from_file(args.file)
 
-    ports = [int(p) for p in args.ports.split(",")]
+    ports = parse_ports(args.ports)
+    crypto_ports = parse_ports(args.crypto_ports)
 
-    print(f"[+] Total IPs: {len(ips)} | Puertos: {ports} | Workers: {args.workers}", flush=True)
+    print(f"[+] Total IPs: {len(ips)} | Puertos: {ports} | Workers: {args.workers}")
+    if args.crypto_scan:
+        print(f"[+] Detección adicional activada en puertos: {crypto_ports}")
 
     results = []
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=args.workers)
-    futures = {executor.submit(scan_ip, ip, ports, args.timeout, args.retries, args.skip_ping, not args.no_arp): ip for ip in ips}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.workers)) as executor:
+        futures = {
+            executor.submit(
+                scan_ip,
+                ip,
+                ports,
+                args.timeout,
+                args.retries,
+                args.skip_ping,
+                not args.no_arp,
+                args.crypto_scan,
+                crypto_ports,
+            ): ip for ip in ips
+        }
 
-    for fut in concurrent.futures.as_completed(futures):
-        ip = futures[fut]
-        try:
-            res = fut.result()
-            results.append(res)
-        except Exception as e:
-            print(f"[ERROR] Falló {ip}: {e}", flush=True)
+        iterator = concurrent.futures.as_completed(futures)
+        if tqdm:
+            iterator = tqdm(iterator, total=len(futures), desc="Escaneando")
 
-    print("[+] Guardando archivos...", flush=True)
-    save_csv(results, args.out_prefix)
-    save_json(results, args.out_prefix)
-    save_summary(results, args.out_prefix)
+        for fut in iterator:
+            ip = futures[fut]
+            try:
+                results.append(fut.result())
+            except Exception as e:
+                print(f"[ERROR] Falló {ip}: {e}")
 
-    print("[✔] ESCANEO COMPLETO", flush=True)
+    print("Guardando archivos...")
+    csv_path = save_csv(results, args.out_prefix)
+    json_path = save_json(results, args.out_prefix)
+    summary_path = save_summary(results, args.out_prefix)
+
+    print(f"[+] Guardado CSV: {csv_path}")
+    print(f"[+] Guardado JSON: {json_path}")
+    print(f"[+] Guardado resumen: {summary_path}")
+    print("ESCANEO COMPLETO")
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
+
