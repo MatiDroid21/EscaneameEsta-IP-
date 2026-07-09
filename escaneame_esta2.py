@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-from pathlib import Path
-out = Path('output')
-out.mkdir(exist_ok=True)
-scanner = r''''''
 import argparse
 import concurrent.futures
 import csv
@@ -30,31 +26,10 @@ DEFAULT_TIMEOUT = 1.0
 DEFAULT_RETRIES = 1
 DEFAULT_CRYPTO_PORTS = [3333, 4444, 5555, 7777, 8332, 8333, 9333, 14444, 33333, 45560, 55555, 6060, 8888]
 DEFAULT_RISK_PORTS = {
-    21: 20,
-    23: 30,
-    80: 10,
-    110: 15,
-    139: 25,
-    143: 15,
-    389: 10,
-    443: 10,
-    445: 35,
-    465: 15,
-    514: 20,
-    587: 15,
-    631: 20,
-    1433: 30,
-    1521: 30,
-    2049: 25,
-    2375: 35,
-    3306: 30,
-    3389: 40,
-    5432: 30,
-    5900: 35,
-    5985: 25,
-    6379: 30,
-    8080: 10,
-    9200: 30,
+    21: 20, 23: 30, 80: 10, 110: 15, 139: 25, 143: 15, 389: 10, 443: 10,
+    445: 35, 465: 15, 514: 20, 587: 15, 631: 20, 1433: 30, 1521: 30,
+    2049: 25, 2375: 35, 3306: 30, 3389: 40, 5432: 30, 5900: 35, 5985: 25,
+    6379: 30, 8080: 10, 9200: 30,
 }
 
 OUI_MAP = {
@@ -68,7 +43,6 @@ OUI_MAP = {
 }
 
 ARP_CACHE: Dict[str, Optional[str]] = {}
-
 
 @dataclass
 class ScanResult:
@@ -93,14 +67,12 @@ class ScanResult:
         data["banners"] = {str(k): v for k, v in self.banners.items()}
         return data
 
-
 def run_cmd(cmd: List[str], timeout: float = 3.0) -> Tuple[int, str, str]:
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         return p.returncode, p.stdout, p.stderr
     except Exception as e:
         return 1, "", str(e)
-
 
 def ping_ip(ip: str, timeout: float = 1.0) -> bool:
     plat = platform.system().lower()
@@ -111,13 +83,11 @@ def ping_ip(ip: str, timeout: float = 1.0) -> bool:
     rc, _, _ = run_cmd(cmd, timeout=timeout + 1)
     return rc == 0
 
-
 def reverse_dns(ip: str) -> str:
     try:
         return socket.gethostbyaddr(ip)[0]
     except Exception:
         return ""
-
 
 def netbios_nbtscan(ip: str) -> str:
     nbtscan_path = shutil.which("nbtscan")
@@ -135,7 +105,6 @@ def netbios_nbtscan(ip: str) -> str:
             return parts[1].split("<")[0]
     return ""
 
-
 def netbios_windows(ip: str) -> str:
     try:
         proc = subprocess.run(["nbtstat", "-A", ip], capture_output=True, text=True, timeout=3)
@@ -146,7 +115,6 @@ def netbios_windows(ip: str) -> str:
         pass
     return ""
 
-
 def get_netbios_name(ip: str) -> str:
     plat = platform.system().lower()
     if "windows" in plat:
@@ -154,7 +122,6 @@ def get_netbios_name(ip: str) -> str:
         if nb:
             return nb
     return netbios_nbtscan(ip)
-
 
 def get_mac_from_arp(ip: str) -> str:
     if ip in ARP_CACHE:
@@ -180,12 +147,10 @@ def get_mac_from_arp(ip: str) -> str:
     ARP_CACHE[ip] = mac or None
     return mac
 
-
 def guess_vendor(mac: str) -> str:
     if not mac:
         return ""
     return OUI_MAP.get(mac.upper()[0:8], "")
-
 
 def probe_banner(ip: str, port: int, timeout: float) -> Tuple[bool, str]:
     try:
@@ -232,7 +197,6 @@ def probe_banner(ip: str, port: int, timeout: float) -> Tuple[bool, str]:
     except Exception:
         return False, ""
 
-
 def classify_device(rdns: str, netbios: str, banners: Dict[int, str], vendor: str) -> str:
     banners_text = " ".join(banners.values()).lower()
     rdns_l = (rdns or "").lower()
@@ -256,7 +220,6 @@ def classify_device(rdns: str, netbios: str, banners: Dict[int, str], vendor: st
         return "Apple (Mac/iOS)"
     return "Equipo (genérico/no identificado)"
 
-
 def check_crypto_ports(ip: str, ports: List[int], timeout: float = 1.0) -> Dict:
     details = []
     open_ports = []
@@ -267,7 +230,6 @@ def check_crypto_ports(ip: str, ports: List[int], timeout: float = 1.0) -> Dict:
             details.append({"port": port, "type": "Posible servicio asociado a minería", "banner": banner})
     return {"has_crypto": bool(open_ports), "open_ports": open_ports, "details": details}
 
-
 def risk_level(score: int) -> str:
     if score >= 70:
         return "critical"
@@ -276,7 +238,6 @@ def risk_level(score: int) -> str:
     if score >= 20:
         return "medium"
     return "low"
-
 
 def score_risk(ip: str, reachable: bool, rdns: str, netbios: str, banners: Dict[int, str], crypto: bool) -> Tuple[int, List[str], List[str]]:
     score = 0
@@ -306,10 +267,7 @@ def score_risk(ip: str, reachable: bool, rdns: str, netbios: str, banners: Dict[
         recs.append("Revisar proceso, conexiones salientes y posibles indicadores de compromiso.")
     if reachable and not banners:
         score += 5
-    if rdns or netbios:
-        score += 0
     return min(score, 100), findings, recs
-
 
 def scan_ip(ip: str, ports: List[int], timeout: float, retries: int, skip_ping: bool = False, try_arp: bool = True, crypto_scan: bool = False, crypto_ports: Optional[List[int]] = None) -> Dict:
     result = ScanResult(ip=ip)
@@ -341,20 +299,16 @@ def scan_ip(ip: str, ports: List[int], timeout: float, retries: int, skip_ping: 
     result.risk_level = risk_level(result.risk_score)
     return result.to_dict()
 
-
 def load_ips_from_file(path: str) -> List[str]:
     with open(path, encoding="utf-8") as f:
         return [line.strip() for line in f if line.strip() and not line.startswith("#")]
-
 
 def generate_ips_from_cidr(cidr: str) -> List[str]:
     net = ipaddress.ip_network(cidr, strict=False)
     return [str(ip) for ip in net.hosts()]
 
-
 def parse_ports(value: str) -> List[int]:
     return [int(part.strip()) for part in value.split(",") if part.strip()]
-
 
 def save_csv(results: List[Dict], out_prefix: str) -> str:
     path = f"{out_prefix}.csv"
@@ -371,13 +325,11 @@ def save_csv(results: List[Dict], out_prefix: str) -> str:
             ])
     return path
 
-
 def save_json(results: List[Dict], out_prefix: str) -> str:
     path = f"{out_prefix}.json"
     with open(path, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
     return path
-
 
 def save_summary(results: List[Dict], out_prefix: str) -> str:
     path = f"resumen_{out_prefix}.txt"
@@ -385,17 +337,16 @@ def save_summary(results: List[Dict], out_prefix: str) -> str:
     risk_count = Counter(r.get("risk_level", "low") for r in results)
     crypto_count = sum(1 for r in results if r.get("crypto_suspicion"))
     with open(path, "w", encoding="utf-8") as f:
-        f.write("Resumen del escaneo\n\n")
-        f.write(f"Total IPs escaneadas: {len(results)}\n")
-        f.write(f"Hosts con indicios de minería: {crypto_count}\n")
-        f.write(f"Critical: {risk_count.get('critical', 0)}\n")
-        f.write(f"High: {risk_count.get('high', 0)}\n")
-        f.write(f"Medium: {risk_count.get('medium', 0)}\n")
-        f.write(f"Low: {risk_count.get('low', 0)}\n\n")
+        f.write("Resumen del escaneo\\n\\n")
+        f.write(f"Total IPs escaneadas: {len(results)}\\n")
+        f.write(f"Hosts con indicios de minería: {crypto_count}\\n")
+        f.write(f"Critical: {risk_count.get('critical', 0)}\\n")
+        f.write(f"High: {risk_count.get('high', 0)}\\n")
+        f.write(f"Medium: {risk_count.get('medium', 0)}\\n")
+        f.write(f"Low: {risk_count.get('low', 0)}\\n\\n")
         for t, c in types_count.most_common():
-            f.write(f"{t}: {c}\n")
+            f.write(f"{t}: {c}\\n")
     return path
-
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Escaneo de IPs con heurísticas, evaluación de riesgo y progresos")
@@ -417,37 +368,48 @@ def main() -> int:
     ports = parse_ports(args.ports)
     crypto_ports = parse_ports(args.crypto_ports)
 
-    print(f"[+] Total IPs: {len(ips)} | Puertos: {ports} | Workers: {args.workers}")
+    print(f"[+] Total IPs: {len(ips)} | Puertos: {ports} | Workers: {args.workers}", flush=True)
+
     results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.workers)) as executor:
-        futures = {
-            executor.submit(scan_ip, ip, ports, args.timeout, args.retries, args.skip_ping, not args.no_arp, args.crypto_scan, crypto_ports): ip
-            for ip in ips
-        }
+        futures = {}
+        for ip in ips:
+            print(f"[>] Escaneando {ip}", flush=True)
+            futures[executor.submit(
+                scan_ip,
+                ip,
+                ports,
+                args.timeout,
+                args.retries,
+                args.skip_ping,
+                not args.no_arp,
+                args.crypto_scan,
+                crypto_ports,
+            )] = ip
+
         iterator = concurrent.futures.as_completed(futures)
         if tqdm:
             iterator = tqdm(iterator, total=len(futures), desc="Escaneando")
+
+        done = 0
         for fut in iterator:
             ip = futures[fut]
             try:
                 results.append(fut.result())
             except Exception as e:
-                print(f"[ERROR] Falló {ip}: {e}")
+                print(f"[ERROR] Falló {ip}: {e}", flush=True)
+            done += 1
+            print(f"[+] Completado {done}/{len(ips)}: {ip}", flush=True)
 
-    print("Guardando archivos...")
+    print("Guardando archivos...", flush=True)
     csv_path = save_csv(results, args.out_prefix)
     json_path = save_json(results, args.out_prefix)
     summary_path = save_summary(results, args.out_prefix)
-    print(f"[+] Guardado CSV: {csv_path}")
-    print(f"[+] Guardado JSON: {json_path}")
-    print(f"[+] Guardado resumen: {summary_path}")
-    print("ESCANEO COMPLETO")
+    print(f"[+] Guardado CSV: {csv_path}", flush=True)
+    print(f"[+] Guardado JSON: {json_path}", flush=True)
+    print(f"[+] Guardado resumen: {summary_path}", flush=True)
+    print("ESCANEO COMPLETO", flush=True)
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-
-(out / 'escaneame_esta.py').write_text(scanner, encoding='utf-8')
-print((out / 'escaneame_esta.py').as_posix())
