@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-
 import os
 import queue
 import subprocess
@@ -8,7 +7,7 @@ import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-SCRIPT = "escaneame_esta.py"
+SCRIPT = "detector_vulnerabilidad.py"
 
 
 class ScanGUI:
@@ -134,7 +133,13 @@ class ScanGUI:
 
         def run():
             try:
-                self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
+                self.proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    bufsize=1,
+                )
 
                 def read_stream(stream, prefix=""):
                     try:
