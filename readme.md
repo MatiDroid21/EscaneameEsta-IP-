@@ -1,4 +1,5 @@
-# 🔎 escaneame_esta.py — v3.0
+# 🔎 escaneame_esta.py — v3.0.1
+> Corrección de Errores minimos que afectaban en el escaneo
 > 💻 Escaneo local de red con interfaz gráfica, heurística de identificación y evaluación de riesgo
 
 > 📡 **Escaneo de IPs con heurística de identificación**  
